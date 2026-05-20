@@ -1,4 +1,15 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useAuth } from "./context/AuthContext.jsx";
+import { useGuestSpotData } from "./context/GuestDataContext.jsx";
+import { useSpots } from "./context/SpotsContext.jsx";
+import { DEMO_SPOTS } from "./data/demoSpots.js";
+import { isAppAdminAccess } from "./lib/admin.js";
+import {
+  adminSetSpotApproval,
+  createMerchantSpot,
+  loadMerchantSpotsForUser,
+  loadPendingSpotsForAdmin,
+} from "./lib/merchantSpots.js";
 
 // ─── Design Tokens – myspot Brand ─────────────────────────────────
 const C = {
@@ -32,7 +43,7 @@ function Screen({ children, bg = C.bg, pad = true }) {
   );
 }
 
-function Btn({ children, onClick, variant = "primary", full = true, small = false, style = {} }) {
+function Btn({ children, onClick, type = "button", disabled = false, variant = "primary", full = true, small = false, style = {} }) {
   const styles = {
     primary:   { background: C.green,     color: "#fff",    border: "none", boxShadow: `0 3px 12px rgba(11,122,62,.3)` },
     secondary: { background: C.mint,      color: C.green,   border: `1.5px solid ${C.green}`, boxShadow:"none" },
@@ -42,14 +53,15 @@ function Btn({ children, onClick, variant = "primary", full = true, small = fals
     purple:    { background: C.purple,    color: "#fff",    border: "none", boxShadow:"none" },
   };
   return (
-    <button onClick={onClick} style={{
+    <button type={type} disabled={disabled} onClick={onClick} style={{
       ...styles[variant],
       width: full ? "100%" : "auto",
       padding: small ? "9px 16px" : "13px 20px",
       borderRadius: 10,
       fontSize: small ? 13 : 14,
       fontWeight: 700,
-      cursor: "pointer",
+      cursor: disabled ? "not-allowed" : "pointer",
+      opacity: disabled ? 0.65 : 1,
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
@@ -103,7 +115,7 @@ function Logo({ size = 28, light = false }) {
       <div style={{ width: size, height: size, background: C.green, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: `0 2px 8px rgba(11,122,62,.3)` }}>
         <span style={{ fontSize: size * .52, fontWeight: 900, color: "#fff", lineHeight: 1, fontFamily: "Inter, sans-serif", letterSpacing: -1 }}>m</span>
       </div>
-      <span style={{ fontSize: size * .85, fontWeight: 800, color: light ? "#fff" : C.dark, letterSpacing: -0.8 }}>myspot</span>
+      <span style={{ fontSize: size * .85, fontWeight: 800, color: light ? "#fff" : C.dark, letterSpacing: -0.8 }}>spotloop</span>
     </div>
   );
 }
@@ -135,22 +147,53 @@ function Check({ children, light = false }) {
   );
 }
 
-// ─── SPOTS DATA ───────────────────────────────────────────────────
-const SPOTS = [
-  { id: 1, name: "Café Central",    cat: "Café",     area: "Mitte",   pts: 5,  max: 10, reward: "Gratis Kaffee",    color: "#8B5CF6", emoji: "☕", img: "#F3E8FF", action: "2× Punkte heute!", followers: 382 },
-  { id: 2, name: "Bar Roma",        cat: "Drinks",   area: "West",    pts: 3,  max: 8,  reward: "Gratis Cocktail",  color: "#EF4444", emoji: "🍹", img: "#FEE2E2", action: "Happy Hour 16–19h", followers: 248 },
-  { id: 3, name: "Bäckerei Katz",   cat: "Bäckerei", area: "Nord",    pts: 8,  max: 10, reward: "Gratis Brezel",    color: "#F59E0B", emoji: "🥐", img: "#FEF3C7", action: "",                  followers: 156 },
-  { id: 4, name: "Pizzeria Verde",  cat: "Lunch",    area: "Süd",     pts: 2,  max: 8,  reward: "Gratis Dessert",   color: "#10B981", emoji: "🍕", img: "#D1FAE5", action: "Neu bei myspot!",   followers: 94  },
-  { id: 5, name: "Matcha House",    cat: "Café",     area: "Ost",     pts: 0,  max: 6,  reward: "Gratis Matcha",    color: "#0F8A4B", emoji: "🍵", img: "#ECFDF3", action: "",                  followers: 211 },
-  { id: 6, name: "Burger & Soul",   cat: "Lunch",    area: "Mitte",   pts: 1,  max: 6,  reward: "Gratis Beilage",   color: "#FF7A2F", emoji: "🍔", img: "#FFF7ED", action: "Lunch-Deal 11–14h", followers: 178 },
-];
+/** Punkte-/Karten-Kennzahlen aus der aktuellen Spot-Liste (Supabase oder Demo). */
+function getWalletStats(spotsList) {
+  const base = spotsList?.length ? spotsList : DEMO_SPOTS;
+  const myCards = base.slice(0, 5);
+  return {
+    totalPts: myCards.reduce((a, s) => a + s.pts, 0),
+    cardCount: myCards.length,
+  };
+}
 
 const CATS = ["Alle", "Café", "Lunch", "Drinks", "Bäckerei", "Date", "Nightlife"];
+
+function SettingsMenuRow({ icon, title, sub, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        width: "100%",
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "14px 16px",
+        background: C.white,
+        border: "none",
+        borderBottom: `1px solid ${C.border}`,
+        cursor: "pointer",
+        textAlign: "left",
+      }}
+    >
+      <span style={{ fontSize: 22, width: 36, textAlign: "center" }}>{icon}</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: C.dark }}>{title}</div>
+        <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>{sub}</div>
+      </div>
+      <span style={{ fontSize: 18, color: C.muted }}>›</span>
+    </button>
+  );
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // A. STARTSEITE (Landing)
 // ═══════════════════════════════════════════════════════════════════
 function Landing({ goTo }) {
+  const { spots, loading, error, source, refresh } = useSpots();
+  const { user, needsAuth } = useAuth();
+
   return (
     <Screen bg={C.bg} pad={false}>
       {/* ── HERO – dunkelgrüner Header wie im Flyer ── */}
@@ -184,6 +227,11 @@ function Landing({ goTo }) {
             <button onClick={() => goTo("discover")} style={{ background: "rgba(255,255,255,.1)", color: "#fff", border: "1px solid rgba(255,255,255,.25)", borderRadius: 10, padding: "13px 20px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
               Spots entdecken →
             </button>
+            {needsAuth && !user && (
+              <button type="button" onClick={() => goTo("auth")} style={{ background: "rgba(255,255,255,.15)", color: "#fff", border: "1px solid rgba(255,255,255,.35)", borderRadius: 10, padding: "12px 20px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                Konto: Anmelden oder registrieren
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -264,8 +312,18 @@ function Landing({ goTo }) {
           <div style={{ fontSize: 14, fontWeight: 800, color: C.dark }}>Beliebte Spots</div>
           <button onClick={() => goTo("discover")} style={{ background: "none", border: "none", color: C.green, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>Alle anzeigen →</button>
         </div>
+        {(loading || error || source === "demo-fallback") && (
+          <div style={{ fontSize: 11, color: C.mid, marginBottom: 10, padding: "8px 10px", background: "#ECFDF5", borderRadius: 8, border: `1px solid ${C.border}` }}>
+            {loading && "Lade Spots von Supabase … "}
+            {!loading && error && <>Supabase: {error} · zeige Demo-Daten. </>}
+            {!loading && !error && source === "demo-fallback" && <>Keine Zeilen in „spots“ – Demo-Daten. </>}
+            {!loading && (error || source === "demo-fallback") && (
+              <button type="button" onClick={() => refresh()} style={{ marginLeft: 4, border: "none", background: "none", color: C.green, fontWeight: 700, cursor: "pointer", padding: 0 }}>Erneut laden</button>
+            )}
+          </div>
+        )}
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {SPOTS.slice(0, 3).map(s => (
+          {spots.slice(0, 3).map(s => (
             <div key={s.id} onClick={() => goTo("spot", s)} style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: "12px 14px", display: "flex", alignItems: "center", gap: 12, cursor: "pointer" }}>
               <div style={{ width: 44, height: 44, borderRadius: 10, background: s.img, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>{s.emoji}</div>
               <div style={{ flex: 1 }}>
@@ -318,7 +376,11 @@ function Landing({ goTo }) {
 // ═══════════════════════════════════════════════════════════════════
 function CheckIn({ goTo }) {
   const [step, setStep] = useState(0); // 0=scan, 1=spot, 2=success
-  const spot = SPOTS[0]; // Café Central
+  const [busyStamp, setBusyStamp] = useState(false);
+  const { spots } = useSpots();
+  const { spotWithUserPts, persistGuestData, addStamp } = useGuestSpotData();
+  const spot = spots[0] ?? DEMO_SPOTS[0];
+  const live = spotWithUserPts(spot);
 
   if (step === 0) return (
     <Screen bg="#111" pad={false}>
@@ -374,16 +436,16 @@ function CheckIn({ goTo }) {
         <Card style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: C.dark }}>Deine Stempelkarte</div>
-            <div style={{ fontSize: 13, color: C.muted }}>{spot.pts}/{spot.max} Punkte</div>
+            <div style={{ fontSize: 13, color: C.muted }}>{live.pts}/{spot.max} Punkte</div>
           </div>
-          <ProgressBar value={spot.pts} max={spot.max} />
+          <ProgressBar value={live.pts} max={spot.max} />
           <div style={{ marginTop: 10, fontSize: 13, color: C.muted }}>
             Nächster Reward: <span style={{ color: C.green, fontWeight: 700 }}>{spot.reward}</span> bei {spot.max} Punkten
           </div>
           <div style={{ display: "flex", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
             {Array.from({ length: spot.max }).map((_, i) => (
-              <div key={i} style={{ width: 28, height: 28, borderRadius: 8, background: i < spot.pts ? C.green : C.border, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: i < spot.pts ? "#fff" : C.muted }}>
-                {i < spot.pts ? "✓" : i + 1}
+              <div key={i} style={{ width: 28, height: 28, borderRadius: 8, background: i < live.pts ? C.green : C.border, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, color: i < live.pts ? "#fff" : C.muted }}>
+                {i < live.pts ? "✓" : i + 1}
               </div>
             ))}
           </div>
@@ -393,10 +455,23 @@ function CheckIn({ goTo }) {
         <div style={{ background: `linear-gradient(135deg, ${C.green}, ${C.fresh})`, borderRadius: 20, padding: 20, marginBottom: 14, textAlign: "center" }}>
           <div style={{ fontSize: 13, color: "rgba(255,255,255,.8)", marginBottom: 4 }}>Sammle jetzt</div>
           <div style={{ fontSize: 28, fontWeight: 800, color: "#fff", marginBottom: 4 }}>+1 Punkt</div>
-          <div style={{ fontSize: 12, color: "rgba(255,255,255,.7)" }}>Neuer Stand: {spot.pts + 1}/{spot.max} Punkte</div>
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,.7)" }}>Neuer Stand: {Math.min(live.pts + 1, spot.max)}/{spot.max} Punkte</div>
         </div>
 
-        <Btn onClick={() => setStep(2)}>⭐ Punkt sichern</Btn>
+        <Btn
+          disabled={busyStamp}
+          onClick={async () => {
+            setBusyStamp(true);
+            try {
+              if (persistGuestData) await addStamp(spot.id, spot.max);
+            } finally {
+              setBusyStamp(false);
+              setStep(2);
+            }
+          }}
+        >
+          {busyStamp ? "…" : "⭐ Punkt sichern"}
+        </Btn>
 
         {spot.action && (
           <div style={{ background: "#FFF7ED", border: `1px solid #FED7AA`, borderRadius: 12, padding: "10px 14px", marginTop: 12, display: "flex", gap: 8, alignItems: "center" }}>
@@ -409,6 +484,11 @@ function CheckIn({ goTo }) {
   );
 
   // Step 2: Success
+  const afterPts = persistGuestData
+    ? spotWithUserPts(spot).pts
+    : Math.min(spot.pts + 1, spot.max);
+  const remain = Math.max(0, spot.max - afterPts);
+
   return (
     <Screen bg={C.bg} pad={false}>
       <div style={{ background: `linear-gradient(160deg, ${C.green}, ${C.fresh})`, padding: "48px 24px 36px", textAlign: "center", position: "relative", overflow: "hidden" }}>
@@ -419,10 +499,10 @@ function CheckIn({ goTo }) {
 
         <div style={{ background: "rgba(255,255,255,.15)", borderRadius: 16, padding: 16, margin: "20px 0 0" }}>
           <div style={{ fontSize: 13, color: "rgba(255,255,255,.8)", marginBottom: 6 }}>Neuer Stand</div>
-          <div style={{ fontSize: 32, fontWeight: 800, color: "#fff", marginBottom: 8 }}>{spot.pts + 1}/{spot.max}</div>
-          <ProgressBar value={spot.pts + 1} max={spot.max} color="rgba(255,255,255,.9)" />
+          <div style={{ fontSize: 32, fontWeight: 800, color: "#fff", marginBottom: 8 }}>{afterPts}/{spot.max}</div>
+          <ProgressBar value={afterPts} max={spot.max} color="rgba(255,255,255,.9)" />
           <div style={{ fontSize: 12, color: "rgba(255,255,255,.7)", marginTop: 6 }}>
-            Noch {spot.max - spot.pts - 1} Punkte bis: {spot.reward}
+            Noch {remain} Punkte bis: {spot.reward}
           </div>
         </div>
       </div>
@@ -466,8 +546,9 @@ function CheckIn({ goTo }) {
 function WalletScreen({ goTo }) {
   const [activeCard, setActiveCard] = useState(null);
   const [tab, setTab] = useState("karten"); // karten | rewards | passes
+  const { mySpotCards, persistGuestData } = useGuestSpotData();
 
-  const myCards = SPOTS.slice(0, 5); // User folgt 5 Spots
+  const myCards = mySpotCards;
   const readyRewards = myCards.filter(s => s.pts >= s.max);
   const totalPts = myCards.reduce((a, s) => a + s.pts, 0);
 
@@ -605,7 +686,18 @@ function WalletScreen({ goTo }) {
 
         {/* ── STEMPELKARTEN ── */}
         {tab === "karten" && <>
-          {readyRewards.length > 0 && (
+          {myCards.length === 0 && (
+            <Card style={{ marginBottom: 14, textAlign: "center" }}>
+              <div style={{ fontSize: 16, fontWeight: 800, color: C.dark, marginBottom: 8 }}>Noch keine Stempelkarten</div>
+              <div style={{ fontSize: 13, color: C.muted, lineHeight: 1.5, marginBottom: 16 }}>
+                {persistGuestData
+                  ? "Speichere Spots unter „Entdecken“ mit „+ Folgen“. Deine Stempelstände werden mit deinem Konto synchronisiert."
+                  : "Demo: Es werden Beispiel-Karten angezeigt, sobald die Spot-Liste geladen ist."}
+              </div>
+              <Btn onClick={() => goTo("discover")}>Spots entdecken</Btn>
+            </Card>
+          )}
+          {myCards.length > 0 && readyRewards.length > 0 && (
             <div style={{ background: "#FFF7ED", border: `1.5px solid ${C.orange}`, borderRadius: 14, padding: "10px 14px", marginBottom: 14, display: "flex", gap: 8, alignItems: "center" }}>
               <span style={{ fontSize: 18 }}>🎁</span>
               <div style={{ fontSize: 13, fontWeight: 700, color: C.orange }}>
@@ -614,6 +706,7 @@ function WalletScreen({ goTo }) {
             </div>
           )}
 
+          {myCards.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {myCards.map(s => {
               const isReady = s.pts >= s.max;
@@ -651,10 +744,13 @@ function WalletScreen({ goTo }) {
               );
             })}
           </div>
+          )}
 
+          {myCards.length > 0 && (
           <button onClick={() => goTo("discover")} style={{ width: "100%", background: C.mint, color: C.green, border: `1.5px solid ${C.green}30`, borderRadius: 14, padding: "13px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginTop: 12 }}>
             + Neue Spots entdecken
           </button>
+          )}
         </>}
 
         {/* ── REWARDS ── */}
@@ -770,9 +866,28 @@ function WalletScreen({ goTo }) {
 function Discover({ goTo }) {
   const [cat, setCat] = useState("Alle");
   const [search, setSearch] = useState("");
-  const [followed, setFollowed] = useState({});
+  const [localFollowed, setLocalFollowed] = useState({});
+  const { spots } = useSpots();
+  const { user, needsAuth } = useAuth();
+  const { persistGuestData, isFollowed, toggleFollow, spotWithUserPts } = useGuestSpotData();
 
-  const filtered = SPOTS.filter(s =>
+  const followOn = (id) =>
+    persistGuestData ? isFollowed(id) : !!localFollowed[id];
+
+  const onToggleFollow = async (e, s) => {
+    e.stopPropagation();
+    if (persistGuestData) {
+      try {
+        await toggleFollow(s.id, !isFollowed(s.id));
+      } catch {
+        /* optional toast */
+      }
+    } else {
+      setLocalFollowed((f) => ({ ...f, [s.id]: !f[s.id] }));
+    }
+  };
+
+  const filtered = spots.filter(s =>
     (cat === "Alle" || s.cat === cat) &&
     (search === "" || s.name.toLowerCase().includes(search.toLowerCase()))
   );
@@ -783,9 +898,16 @@ function Discover({ goTo }) {
       <div style={{ background: C.white, padding: "16px 24px 0", borderBottom: `1px solid ${C.border}`, position: "sticky", top: 0, zIndex: 10 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
           <Logo size={24} />
-          <button onClick={() => goTo("profile")} style={{ background: C.mint, color: C.green, border: "none", borderRadius: 10, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-            👤 Profil
-          </button>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {needsAuth && !user && (
+              <button type="button" onClick={() => goTo("auth")} style={{ background: C.darkGreen, color: "#fff", border: "none", borderRadius: 10, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                Login
+              </button>
+            )}
+            <button onClick={() => goTo("profile")} style={{ background: C.mint, color: C.green, border: "none", borderRadius: 10, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+              👤 Profil
+            </button>
+          </div>
         </div>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔍  Wonach hast du Lust?" style={{ width: "100%", background: C.bg, border: `1.5px solid ${C.border}`, borderRadius: 12, padding: "11px 14px", fontSize: 14, color: C.dark, outline: "none", marginBottom: 14 }} />
         <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 14 }}>
@@ -801,7 +923,10 @@ function Discover({ goTo }) {
         <div style={{ fontSize: 13, color: C.muted, marginBottom: 14 }}>{filtered.length} Spots gefunden</div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {filtered.map(s => (
+          {filtered.map((s) => {
+            const d = spotWithUserPts(s);
+            const fo = followOn(s.id);
+            return (
             <Card key={s.id} onClick={() => goTo("spot", s)}>
               <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
                 <div style={{ width: 64, height: 64, borderRadius: 16, background: s.img, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30, flexShrink: 0 }}>{s.emoji}</div>
@@ -811,22 +936,22 @@ function Discover({ goTo }) {
                       <div style={{ fontSize: 15, fontWeight: 700, color: C.dark }}>{s.name}</div>
                       <div style={{ fontSize: 12, color: C.muted }}>{s.cat} · {s.area}</div>
                     </div>
-                    <button onClick={e => { e.stopPropagation(); setFollowed(f => ({ ...f, [s.id]: !f[s.id] })); }} style={{ background: followed[s.id] ? C.green : C.white, color: followed[s.id] ? "#fff" : C.green, border: `1.5px solid ${C.green}`, borderRadius: 99, padding: "4px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>
-                      {followed[s.id] ? "✓ Folge ich" : "+ Folgen"}
+                    <button onClick={(e) => onToggleFollow(e, s)} style={{ background: fo ? C.green : C.white, color: fo ? "#fff" : C.green, border: `1.5px solid ${C.green}`, borderRadius: 99, padding: "4px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>
+                      {fo ? "✓ Folge ich" : "+ Folgen"}
                     </button>
                   </div>
                   {s.action && <Tag color={C.orange} bg="#FFF7ED">{s.action}</Tag>}
                   <div style={{ marginTop: 8 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: C.muted, marginBottom: 4 }}>
-                      <span>{s.pts}/{s.max} Punkte</span>
+                      <span>{d.pts}/{d.max} Punkte</span>
                       <span style={{ color: C.green, fontWeight: 600 }}>{s.reward}</span>
                     </div>
-                    <ProgressBar value={s.pts} max={s.max} />
+                    <ProgressBar value={d.pts} max={d.max} />
                   </div>
                 </div>
               </div>
             </Card>
-          ))}
+          );})}
         </div>
       </div>
     </Screen>
@@ -837,14 +962,34 @@ function Discover({ goTo }) {
 // SPOT DETAIL
 // ═══════════════════════════════════════════════════════════════════
 function SpotDetail({ spot, goTo }) {
-  const [following, setFollowing] = useState(false);
+  const { persistGuestData, isFollowed, toggleFollow, spotWithUserPts } = useGuestSpotData();
+  const [localFollow, setLocalFollow] = useState(false);
   if (!spot) return null;
+  const display = spotWithUserPts(spot);
+  const following = persistGuestData ? isFollowed(spot.id) : localFollow;
+
   return (
     <Screen bg={C.bg} pad={false}>
       <div style={{ background: spot.img, padding: "20px 24px 28px", position: "relative" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
           <BackBtn onClick={() => goTo("discover")} />
-          <button onClick={() => setFollowing(!following)} style={{ background: following ? C.green : C.white, color: following ? "#fff" : C.green, border: `1.5px solid ${C.green}`, borderRadius: 99, padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+          <button
+            type="button"
+            onClick={() => {
+              if (persistGuestData) toggleFollow(spot.id, !isFollowed(spot.id));
+              else setLocalFollow((f) => !f);
+            }}
+            style={{
+              background: following ? C.green : C.white,
+              color: following ? "#fff" : C.green,
+              border: `1.5px solid ${C.green}`,
+              borderRadius: 99,
+              padding: "8px 16px",
+              fontSize: 13,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
             {following ? "✓ Folge ich" : "+ Folgen"}
           </button>
         </div>
@@ -860,16 +1005,16 @@ function SpotDetail({ spot, goTo }) {
         <Card style={{ marginBottom: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: C.dark }}>Deine Stempelkarte</div>
-            <div style={{ fontSize: 22, fontWeight: 800, color: C.green }}>{spot.pts}/{spot.max}</div>
+            <div style={{ fontSize: 22, fontWeight: 800, color: C.green }}>{display.pts}/{display.max}</div>
           </div>
-          <ProgressBar value={spot.pts} max={spot.max} />
+          <ProgressBar value={display.pts} max={display.max} />
           <div style={{ marginTop: 10, fontSize: 13, color: C.muted }}>
-            Reward: <span style={{ color: C.green, fontWeight: 700 }}>{spot.reward}</span> · noch {spot.max - spot.pts} Punkte
+            Reward: <span style={{ color: C.green, fontWeight: 700 }}>{spot.reward}</span> · noch {display.max - display.pts} Punkte
           </div>
           <div style={{ display: "flex", gap: 5, marginTop: 12, flexWrap: "wrap" }}>
             {Array.from({ length: spot.max }).map((_, i) => (
-              <div key={i} style={{ width: 26, height: 26, borderRadius: 8, background: i < spot.pts ? spot.color : C.border, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: i < spot.pts ? "#fff" : C.muted }}>
-                {i < spot.pts ? "✓" : ""}
+              <div key={i} style={{ width: 26, height: 26, borderRadius: 8, background: i < display.pts ? spot.color : C.border, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: i < display.pts ? "#fff" : C.muted }}>
+                {i < display.pts ? "✓" : ""}
               </div>
             ))}
           </div>
@@ -886,7 +1031,9 @@ function SpotDetail({ spot, goTo }) {
 // E. GÄSTE PROFIL / WALLET
 // ═══════════════════════════════════════════════════════════════════
 function Profile({ goTo }) {
-  const mySpots = SPOTS.slice(0, 4);
+  const { user, needsAuth, signOut } = useAuth();
+  const { mySpotCards } = useGuestSpotData();
+  const mySpots = mySpotCards.slice(0, 4);
   const totalPts = mySpots.reduce((a, s) => a + s.pts, 0);
   const readyRewards = mySpots.filter(s => s.pts >= s.max).length;
 
@@ -898,7 +1045,10 @@ function Profile({ goTo }) {
           <button onClick={() => goTo("home")} style={{ background: "rgba(255,255,255,.2)", color: "#fff", border: "none", borderRadius: 10, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>← Home</button>
         </div>
         <div style={{ fontSize: 20, fontWeight: 800, color: "#fff", marginBottom: 4, letterSpacing: -0.5 }}>Meine Vorteile</div>
-        <div style={{ fontSize: 13, color: "rgba(255,255,255,.8)" }}>Du folgst {mySpots.length} Spots</div>
+        {needsAuth && user && (
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,.9)", marginTop: 6 }}>{user.email}</div>
+        )}
+        <div style={{ fontSize: 13, color: "rgba(255,255,255,.8)", marginTop: 6 }}>Du folgst {mySpots.length} Spots</div>
         <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
           {[{ n: totalPts, l: "Punkte gesamt" }, { n: mySpots.length, l: "Spots" }, { n: readyRewards, l: "Rewards bereit" }].map((m, i) => (
             <div key={i} style={{ flex: 1, background: "rgba(255,255,255,.15)", borderRadius: 12, padding: "10px 8px", textAlign: "center" }}>
@@ -942,8 +1092,119 @@ function Profile({ goTo }) {
         </div>
 
         <div style={{ marginTop: 20 }}>
+          {needsAuth && user && (
+            <Btn variant="ghost" onClick={() => signOut().catch(() => {})} style={{ marginBottom: 10, color: "#fff", borderColor: "rgba(255,255,255,.35)" }}>
+              Abmelden
+            </Btn>
+          )}
           <Btn onClick={() => goTo("wallet")} variant="dark">💳 Wallet-Karte anzeigen</Btn>
           <Btn onClick={() => goTo("discover")} variant="secondary" style={{ marginTop: 10 }}>Neue Spots entdecken</Btn>
+          <Btn onClick={() => goTo("settings")} variant="ghost" style={{ marginTop: 10 }}>⚙️ Konto &amp; Einstellungen</Btn>
+        </div>
+      </div>
+    </Screen>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// E2. KONTO / EINSTELLUNGEN (Demo – keine Cloud-Daten)
+// ═══════════════════════════════════════════════════════════════════
+function GuestSettingsScreen({ goTo }) {
+  const { spots, source } = useSpots();
+  const { user, needsAuth, signOut } = useAuth();
+  const { mySpotCards } = useGuestSpotData();
+  const { totalPts, cardCount } = getWalletStats(mySpotCards);
+
+  return (
+    <Screen bg={C.bg} pad={false}>
+      <div style={{ background: C.white, padding: "16px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 12 }}>
+        <BackBtn onClick={() => goTo("profile")} />
+        <div style={{ fontSize: 17, fontWeight: 800, color: C.dark }}>Konto</div>
+      </div>
+
+      <div style={{ padding: "16px 20px" }}>
+        {needsAuth && user && (
+          <Card style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, color: C.muted }}>Eingeloggt als</div>
+            <div style={{ fontWeight: 700, color: C.dark, marginTop: 4 }}>{user.email}</div>
+            <Btn variant="secondary" small full={false} style={{ marginTop: 12 }} onClick={() => signOut().catch(() => {})}>
+              Abmelden
+            </Btn>
+          </Card>
+        )}
+
+        <Card style={{ marginBottom: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: C.dark }}>Mitgliedschaft</div>
+            <Tag color={C.green} bg={C.mint}>Kostenlos</Tag>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div style={{ background: C.bg, borderRadius: 12, padding: "14px 12px", textAlign: "center" }}>
+              <div style={{ fontSize: 22, fontWeight: 800, color: C.dark }}>{totalPts}</div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Gesammelte Punkte</div>
+            </div>
+            <div style={{ background: C.bg, borderRadius: 12, padding: "14px 12px", textAlign: "center" }}>
+              <div style={{ fontSize: 22, fontWeight: 800, color: C.dark }}>{cardCount}</div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>Stempelkarten</div>
+            </div>
+          </div>
+        </Card>
+
+        <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden", marginBottom: 16 }}>
+          <SettingsMenuRow icon="🔔" title="Benachrichtigungen" sub="Push & E-Mail" onClick={() => goTo("benachrichtigungen")} />
+          <SettingsMenuRow icon="🔒" title="Datenschutz & Sicherheit" sub="Daten, Kontrolle, DSGVO" onClick={() => goTo("profile")} />
+          <button
+            type="button"
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              padding: "14px 16px",
+              background: C.white,
+              border: "none",
+              borderBottom: `1px solid ${C.border}`,
+              cursor: "pointer",
+              textAlign: "left",
+              opacity: 0.65,
+            }}
+          >
+            <span style={{ fontSize: 22, width: 36, textAlign: "center" }}>💳</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.dark }}>Zahlungsmethoden</div>
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>Karte hinzufügen · im Prototyp nicht angebunden</div>
+            </div>
+            <span style={{ fontSize: 18, color: C.muted }}>›</span>
+          </button>
+          <SettingsMenuRow icon="🎁" title="Einladungen" sub="Freunde werben" onClick={() => goTo("gruppe")} />
+          <button
+            type="button"
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              padding: "14px 16px",
+              background: C.white,
+              border: "none",
+              borderBottom: `1px solid ${C.border}`,
+              cursor: "pointer",
+              textAlign: "left",
+              opacity: 0.65,
+            }}
+          >
+            <span style={{ fontSize: 22, width: 36, textAlign: "center" }}>❓</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: C.dark }}>Hilfe &amp; Support</div>
+              <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>FAQ & Kontakt · folgt mit Live-Backend</div>
+            </div>
+            <span style={{ fontSize: 18, color: C.muted }}>›</span>
+          </button>
+          <SettingsMenuRow icon="⚙️" title="Einstellungen" sub="App-Einstellungen" onClick={() => goTo("profile")} />
+        </div>
+
+        <div style={{ background: "#FEF3C7", border: `1px solid #FCD34D`, borderRadius: 12, padding: "12px 14px", fontSize: 12, color: "#92400E", lineHeight: 1.5 }}>
+          <strong>Supabase:</strong> Spots {source === "supabase" ? "(Live aus DB)" : "(Demo oder Fallback)"}. <strong>Schritt 2:</strong> Wallet, Profil, Check-in &amp; Konto erfordern Anmeldung, sobald URL + Anon-Key gesetzt sind.
         </div>
       </div>
     </Screen>
@@ -954,7 +1215,44 @@ function Profile({ goTo }) {
 // F. HÄNDLER DASHBOARD
 // ═══════════════════════════════════════════════════════════════════
 function MerchantDashboard({ goTo }) {
+  const { user, needsAuth } = useAuth();
+  const { source } = useSpots();
   const [tab, setTab] = useState("today");
+  const [mySpots, setMySpots] = useState([]);
+  const [myErr, setMyErr] = useState(null);
+
+  useEffect(() => {
+    if (!needsAuth || !user || source !== "supabase") {
+      setMySpots([]);
+      setMyErr(null);
+      return;
+    }
+    let cancelled = false;
+    loadMerchantSpotsForUser(user.id)
+      .then((rows) => {
+        if (!cancelled) setMySpots(rows);
+      })
+      .catch((e) => {
+        if (!cancelled) setMyErr(e?.message ?? String(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [needsAuth, user, source]);
+
+  const displayName =
+    mySpots[0]?.name ??
+    (needsAuth && user && source === "supabase" ? "Kein Spot angelegt" : "Café Central");
+  const displaySub = mySpots[0]
+    ? `Händler-Dashboard · ${
+        mySpots[0].approvalStatus === "pending"
+          ? "Freigabe ausstehend"
+          : mySpots[0].area || "Dein Bereich"
+      }`
+    : needsAuth && user && source === "supabase"
+      ? "Lege im Setup einen Spot an – danach erscheint er hier."
+      : "Händler-Dashboard · Stuttgart-Mitte";
+
   const metrics = [
     { label: "QR-Scans",       val: "147",  trend: "+12%",  icon: "⬛", color: C.purple },
     { label: "Check-ins",      val: "89",   trend: "+8%",   icon: "✓",  color: C.green  },
@@ -975,8 +1273,11 @@ function MerchantDashboard({ goTo }) {
             <button onClick={() => goTo("home")} style={{ background: "rgba(255,255,255,.1)", color: "#fff", border: "none", borderRadius: 10, padding: "6px 12px", fontSize: 12, cursor: "pointer" }}>← App</button>
           </div>
         </div>
-        <div style={{ fontSize: 18, fontWeight: 800, color: "#fff", marginBottom: 2, letterSpacing: -0.5 }}>Café Central</div>
-        <div style={{ fontSize: 13, color: "rgba(255,255,255,.6)" }}>Händler-Dashboard · Stuttgart-Mitte</div>
+        <div style={{ fontSize: 18, fontWeight: 800, color: "#fff", marginBottom: 2, letterSpacing: -0.5 }}>{displayName}</div>
+        <div style={{ fontSize: 13, color: "rgba(255,255,255,.6)" }}>{displaySub}</div>
+        {myErr && (
+          <div style={{ marginTop: 10, fontSize: 11, color: "#FCA5A5" }}>{myErr}</div>
+        )}
         <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
           {["today", "week", "month"].map(t => (
             <button key={t} onClick={() => setTab(t)} style={{ background: tab === t ? C.green : "rgba(255,255,255,.1)", color: "#fff", border: "none", borderRadius: 99, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
@@ -1302,11 +1603,47 @@ function CampaignScreen({ goTo }) {
 // H. HÄNDLER ONBOARDING
 // ═══════════════════════════════════════════════════════════════════
 function Onboarding({ goTo }) {
+  const { user, needsAuth } = useAuth();
+  const { refresh } = useSpots();
   const [step, setStep] = useState(0);
   const [name, setName] = useState("");
   const [cat, setCat] = useState("");
   const [reward, setReward] = useState("");
   const [pts, setPts] = useState("10");
+  const [submitErr, setSubmitErr] = useState(null);
+  const [finishing, setFinishing] = useState(false);
+
+  const finishOnboarding = async () => {
+    setSubmitErr(null);
+    if (needsAuth && !user) {
+      setSubmitErr("Bitte anmelden – du wirst zum Login weitergeleitet.");
+      goTo("auth");
+      return;
+    }
+    if (!needsAuth) {
+      goTo("merchant");
+      return;
+    }
+    setFinishing(true);
+    try {
+      const categoryForDb = (cat.includes(" ") ? cat.slice(cat.indexOf(" ") + 1) : cat).trim() || cat;
+      const emojiForDb = [...cat.trim()][0] || "📍";
+      await createMerchantSpot({
+        name: name.trim(),
+        category: categoryForDb,
+        area: "",
+        reward,
+        maxStamps: Number(pts) || 10,
+        emoji: emojiForDb,
+      });
+      await refresh();
+      goTo("merchant");
+    } catch (e) {
+      setSubmitErr(e?.message ?? String(e));
+    } finally {
+      setFinishing(false);
+    }
+  };
 
   const steps = [
     { label: "Profil", icon: "🏪" },
@@ -1422,9 +1759,22 @@ function Onboarding({ goTo }) {
         {step === 4 && <>
           <div style={{ textAlign: "center", padding: "20px 0" }}>
             <div style={{ fontSize: 56, marginBottom: 12 }}>🎉</div>
-            <div style={{ fontSize: 24, fontWeight: 800, color: C.dark, marginBottom: 6, letterSpacing: -0.5 }}>Dein Spot ist live!</div>
+            <div style={{ fontSize: 24, fontWeight: 800, color: C.dark, marginBottom: 6, letterSpacing: -0.5 }}>
+              {needsAuth ? "Alles vorbereitet" : "Dein Spot ist live!"}
+            </div>
             <div style={{ fontSize: 14, color: C.muted, marginBottom: 24, lineHeight: 1.5 }}>
-              {name || "Dein Spot"} ist jetzt auf myspot.<br />Stelle den QR-Code auf und warte auf deine ersten Gäste.
+              {needsAuth ? (
+                <>
+                  Mit <strong>„Zum Dashboard“</strong> legst du {name || "deinen Spot"} zur Prüfung an (Status: ausstehend).
+                  Nach Admin-Freigabe erscheint er unter Entdecken für Gäste.
+                </>
+              ) : (
+                <>
+                  {name || "Dein Spot"} ist jetzt auf myspot (Demo).
+                  <br />
+                  Stelle den QR-Code auf und warte auf deine ersten Gäste.
+                </>
+              )}
             </div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -1440,7 +1790,14 @@ function Onboarding({ goTo }) {
               </div>
             ))}
           </div>
-          <Btn onClick={() => goTo("merchant")} style={{ marginTop: 24 }}>🚀 Zum Dashboard →</Btn>
+          {submitErr && (
+            <div style={{ background: "#FEE2E2", color: "#991B1B", borderRadius: 10, padding: "10px 12px", fontSize: 13, marginTop: 12 }}>
+              {submitErr}
+            </div>
+          )}
+          <Btn onClick={finishOnboarding} disabled={finishing} style={{ marginTop: 24 }}>
+            {finishing ? "Wird gespeichert …" : "🚀 Zum Dashboard →"}
+          </Btn>
         </>}
       </div>
     </Screen>
@@ -1662,7 +2019,7 @@ function CardLinkedScreen({ goTo }) {
           ].map((s, i, a) => (
             <div key={i} style={{ display: "flex", gap: 14, alignItems: "flex-start", position: "relative", paddingBottom: i < a.length-1 ? 16 : 0 }}>
               {i < a.length-1 && <div style={{ position: "absolute", left: 19, top: 40, width: 2, height: "calc(100% - 24px)", background: C.border }} />}
-              <div style={{ width: 40, height: 40, borderRadius: 14, background: s.color + "18", border: `1.5px solid ${s.color}30`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0, zIndex: 1, background: C.white }}>
+                <div style={{ width: 40, height: 40, borderRadius: 14, border: `1.5px solid ${s.color}30`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0, zIndex: 1, background: C.white }}>
                 {s.icon}
               </div>
               <div style={{ paddingTop: 8 }}>
@@ -2603,9 +2960,56 @@ const ADMIN_HAENDLER = [
   { id:4, name:"Matcha House",    plan:"Starter", mrr:79,  scans:12,  follower:31,  wiederkehrer:28, aktiv:false, trend:"-2%"  },
 ];
 
-function AdminDashboardScreen() {
+function AdminDashboardScreen({ goTo }) {
+  const { user, session } = useAuth();
+  const { refresh } = useSpots();
+  const isAdmin = isAppAdminAccess(user, session);
   const [tab, setTab] = useState("overview");
   const [sel, setSel] = useState(null);
+  const [pendingSpots, setPendingSpots] = useState([]);
+  const [pendingErr, setPendingErr] = useState(null);
+  const [pendingBusy, setPendingBusy] = useState(false);
+
+  const reloadPending = useCallback(async () => {
+    if (!isAdmin) return;
+    setPendingErr(null);
+    try {
+      setPendingSpots(await loadPendingSpotsForAdmin());
+    } catch (e) {
+      setPendingErr(e?.message ?? String(e));
+    }
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (tab === "freigaben" && isAdmin) reloadPending();
+  }, [tab, isAdmin, reloadPending]);
+
+  const setApproval = async (spotId, status) => {
+    setPendingBusy(true);
+    setPendingErr(null);
+    try {
+      await adminSetSpotApproval(spotId, status);
+      await reloadPending();
+      await refresh();
+    } catch (e) {
+      setPendingErr(e?.message ?? String(e));
+    } finally {
+      setPendingBusy(false);
+    }
+  };
+
+  const adminTabs = isAdmin
+    ? [
+        ["overview", "Übersicht"],
+        ["freigaben", "Freigaben"],
+        ["haendler", "Händler"],
+        ["finanzen", "Finanzen"],
+      ]
+    : [
+        ["overview", "Übersicht"],
+        ["haendler", "Händler"],
+        ["finanzen", "Finanzen"],
+      ];
   const totalMRR = ADMIN_HAENDLER.reduce((a,h)=>a+h.mrr,0);
   const active = ADMIN_HAENDLER.filter(h=>h.aktiv).length;
   const totalScans = ADMIN_HAENDLER.reduce((a,h)=>a+h.scans,0);
@@ -2614,19 +3018,54 @@ function AdminDashboardScreen() {
     <Screen bg={C.bg} pad={false}>
       <div style={{ background:C.darkGreen, padding:"20px 24px 16px" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+          {goTo ? (
+            <button type="button" onClick={() => goTo("home")} style={{ background:"rgba(255,255,255,.12)", border:"none", borderRadius:8, padding:"6px 10px", fontSize:11, fontWeight:600, color:"#fff", cursor:"pointer" }}>← App</button>
+          ) : (
+            <div style={{ width:56 }} />
+          )}
           <Logo size={22} light />
           <div style={{ background:"rgba(255,255,255,.15)", borderRadius:7, padding:"4px 10px", fontSize:10, fontWeight:700, color:"#fff" }}>🔐 Admin</div>
         </div>
         <div style={{ fontSize:16, fontWeight:800, color:"#fff" }}>Admin-Dashboard</div>
         <div style={{ fontSize:11, color:"rgba(255,255,255,.6)", marginTop:2 }}>Stuttgart Pilot · Phase 1</div>
-        <div style={{ display:"flex", gap:4, marginTop:12 }}>
-          {[["overview","Übersicht"],["haendler","Händler"],["finanzen","Finanzen"]].map(([id,lb])=>(
+        <div style={{ display:"flex", gap:4, marginTop:12, flexWrap:"wrap" }}>
+          {adminTabs.map(([id,lb])=>(
             <button key={id} onClick={()=>setTab(id)} style={{ background:tab===id?C.green:"rgba(255,255,255,.12)", color:"#fff", border:"none", borderRadius:99, padding:"5px 12px", fontSize:11, fontWeight:tab===id?700:400, cursor:"pointer" }}>{lb}</button>
           ))}
         </div>
       </div>
 
       <div style={{ padding:"14px 20px" }}>
+        {/* SPOT-FREIGABEN */}
+        {tab==="freigaben"&&<>
+          {!isAdmin ? (
+            <Card><div style={{ fontSize:13, color:C.muted }}>Kein Admin-Zugriff. In Supabase beim User <code style={{ fontSize:11 }}>user_metadata.is_admin</code> auf <code style={{ fontSize:11 }}>true</code> setzen, neu anmelden.</div></Card>
+          ) : (
+            <>
+              {pendingErr && <div style={{ background:"#FEE2E2", color:"#991B1B", borderRadius:10, padding:"10px 12px", fontSize:12, marginBottom:10 }}>{pendingErr}</div>}
+              <div style={{ fontSize:13, fontWeight:700, color:C.dark, marginBottom:10 }}>Ausstehende Spots ({pendingSpots.length})</div>
+              {pendingSpots.length === 0 ? (
+                <Card><div style={{ fontSize:12, color:C.muted }}>Keine Entwürfe zur Freigabe.</div></Card>
+              ) : (
+                pendingSpots.map((sp) => (
+                  <Card key={sp.id} style={{ marginBottom:8 }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:10 }}>
+                      <div>
+                        <div style={{ fontSize:14, fontWeight:700, color:C.dark }}>{sp.emoji} {sp.name}</div>
+                        <div style={{ fontSize:11, color:C.muted, marginTop:4 }}>{sp.cat} · Owner {sp.ownerId?.slice(0, 8) ?? "?"}…</div>
+                      </div>
+                    </div>
+                    <div style={{ display:"flex", gap:8, marginTop:12 }}>
+                      <button type="button" disabled={pendingBusy} onClick={() => setApproval(sp.id, "approved")} style={{ flex:1, padding:10, background:C.green, color:"#fff", border:"none", borderRadius:10, fontSize:12, fontWeight:700, cursor: pendingBusy ? "wait" : "pointer", opacity: pendingBusy ? 0.7 : 1 }}>Freigeben</button>
+                      <button type="button" disabled={pendingBusy} onClick={() => setApproval(sp.id, "rejected")} style={{ flex:1, padding:10, background:C.bg, color:C.red, border:`1.5px solid ${C.border}`, borderRadius:10, fontSize:12, fontWeight:700, cursor: pendingBusy ? "wait" : "pointer" }}>Ablehnen</button>
+                    </div>
+                  </Card>
+                ))
+              )}
+            </>
+          )}
+        </>}
+
         {/* OVERVIEW */}
         {tab==="overview"&&<>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:12 }}>
@@ -2769,19 +3208,181 @@ function NavBar({ screen, goTo }) {
     { id: "profile",  icon: "🎁", label: "Rewards" },
     { id: "merchant", icon: "📊", label: "Händler" },
   ];
-  const hideOn = ["checkin", "merchant", "onboarding", "campaign", "investor", "wallet", "spot", "card"];
+  const hideOn = ["checkin", "merchant", "onboarding", "campaign", "investor", "wallet", "spot", "card", "auth"];
   if (hideOn.includes(screen)) return null;
+  const navActive = (id) => id === screen || (id === "profile" && screen === "settings");
   return (
     <div style={{ position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 390, background: "#fff", borderTop: `1.5px solid ${C.border}`, display: "flex", justifyContent: "space-around", padding: "6px 0 12px", zIndex: 100, boxShadow: "0 -3px 16px rgba(0,0,0,.07)" }}>
       {items.map(it => (
         <button key={it.id} onClick={() => goTo(it.id)} style={{ background: "none", border: "none", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, padding: "3px 8px", minWidth: 44 }}>
-          <div style={{ width: 34, height: 34, borderRadius: 9, background: screen === it.id ? C.mint : "transparent", display: "flex", alignItems: "center", justifyContent: "center", transition: "background .15s" }}>
+          <div style={{ width: 34, height: 34, borderRadius: 9, background: navActive(it.id) ? C.mint : "transparent", display: "flex", alignItems: "center", justifyContent: "center", transition: "background .15s" }}>
             <span style={{ fontSize: 18 }}>{it.icon}</span>
           </div>
-          <span style={{ fontSize: 9, fontWeight: screen === it.id ? 700 : 400, color: screen === it.id ? C.green : C.muted, letterSpacing: -0.1 }}>{it.label}</span>
+          <span style={{ fontSize: 9, fontWeight: navActive(it.id) ? 700 : 400, color: navActive(it.id) ? C.green : C.muted, letterSpacing: -0.1 }}>{it.label}</span>
         </button>
       ))}
     </div>
+  );
+}
+
+/** Ohne Sitzung: Zugriff nur nach Login (wenn Supabase konfiguriert). */
+const PROTECTED_SCREENS = new Set([
+  "wallet",
+  "profile",
+  "settings",
+  "checkin",
+  "benachrichtigungen",
+  "onboarding",
+]);
+
+// ═══════════════════════════════════════════════════════════════════
+// LOGIN / REGISTRIERUNG (Supabase Auth)
+// ═══════════════════════════════════════════════════════════════════
+function GuestAuthScreen({ onSuccess, onCancel }) {
+  const { signIn, signUp, needsAuth, loading: authLoading } = useAuth();
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+  const [info, setInfo] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  if (needsAuth && authLoading) {
+    return (
+      <Screen bg={C.bg}>
+        <div style={{ padding: 32, textAlign: "center", color: C.muted }}>Sitzung wird geladen …</div>
+      </Screen>
+    );
+  }
+
+  if (!needsAuth) {
+    return (
+      <Screen bg={C.bg} pad={false}>
+        <div style={{ padding: 24 }}>
+          <Logo size={28} />
+          <p style={{ color: C.mid, marginTop: 16, lineHeight: 1.5 }}>
+            Ohne <code style={{ fontSize: 12 }}>VITE_SUPABASE_URL</code> und Anon-Key läuft die App im reinen Demo-Modus – kein Login nötig.
+          </p>
+          <Btn onClick={onCancel} style={{ marginTop: 16 }}>Zur Startseite</Btn>
+        </div>
+      </Screen>
+    );
+  }
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setInfo(null);
+    setBusy(true);
+    try {
+      if (mode === "login") {
+        await signIn(email.trim(), password);
+        setTimeout(() => onSuccess(), 0);
+      } else {
+        const { data } = await signUp(email.trim(), password);
+        if (data?.session) setTimeout(() => onSuccess(), 0);
+        else {
+          setInfo(
+            "Account angelegt. Bitte E-Mail bestätigen (falls in Supabase aktiviert) und danach anmelden."
+          );
+        }
+      }
+    } catch (err) {
+      setError(err?.message ?? "Anmeldung fehlgeschlagen.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Screen bg={C.bg} pad={false}>
+      <div style={{ background: C.white, padding: "16px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 12 }}>
+        <BackBtn onClick={onCancel} />
+        <div style={{ fontSize: 17, fontWeight: 800, color: C.dark }}>{mode === "login" ? "Anmelden" : "Registrieren"}</div>
+      </div>
+
+      <div style={{ padding: "20px 24px" }}>
+        <Logo size={26} />
+        <p style={{ fontSize: 13, color: C.muted, marginTop: 12, lineHeight: 1.5 }}>
+          Mit Supabase-Auth geschützte Bereiche: Wallet, Profil, Check-in, Benachrichtigungen, Konto – und Händler-Onboarding (Spot zur Freigabe anlegen).
+        </p>
+
+        <div style={{ display: "flex", gap: 8, marginTop: 20 }}>
+          {[
+            ["login", "Anmelden"],
+            ["register", "Registrieren"],
+          ].map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => { setMode(id); setError(null); setInfo(null); }}
+              style={{
+                flex: 1,
+                padding: "10px 12px",
+                borderRadius: 10,
+                border: `1.5px solid ${mode === id ? C.green : C.border}`,
+                background: mode === id ? C.mint : C.white,
+                color: mode === id ? C.green : C.mid,
+                fontWeight: 700,
+                fontSize: 13,
+                cursor: "pointer",
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <form onSubmit={submit} style={{ marginTop: 18 }}>
+          <label style={{ fontSize: 12, fontWeight: 600, color: C.mid, display: "block", marginBottom: 6 }}>E-Mail</label>
+          <input
+            type="email"
+            autoComplete="email"
+            value={email}
+            onChange={(ev) => setEmail(ev.target.value)}
+            required
+            placeholder="du@beispiel.de"
+            style={{
+              width: "100%",
+              padding: "12px 14px",
+              borderRadius: 10,
+              border: `1.5px solid ${C.border}`,
+              fontSize: 15,
+              marginBottom: 14,
+              boxSizing: "border-box",
+            }}
+          />
+          <label style={{ fontSize: 12, fontWeight: 600, color: C.mid, display: "block", marginBottom: 6 }}>Passwort</label>
+          <input
+            type="password"
+            autoComplete={mode === "login" ? "current-password" : "new-password"}
+            value={password}
+            onChange={(ev) => setPassword(ev.target.value)}
+            required
+            minLength={6}
+            placeholder="min. 6 Zeichen"
+            style={{
+              width: "100%",
+              padding: "12px 14px",
+              borderRadius: 10,
+              border: `1.5px solid ${C.border}`,
+              fontSize: 15,
+              marginBottom: 14,
+              boxSizing: "border-box",
+            }}
+          />
+
+          {error && (
+            <div style={{ background: "#FEE2E2", color: "#991B1B", borderRadius: 10, padding: "10px 12px", fontSize: 13, marginBottom: 12 }}>{error}</div>
+          )}
+          {info && (
+            <div style={{ background: "#ECFDF5", color: C.dark, borderRadius: 10, padding: "10px 12px", fontSize: 13, marginBottom: 12, border: `1px solid ${C.border}` }}>{info}</div>
+          )}
+
+          <Btn type="submit" disabled={busy}>{busy ? "Bitte warten …" : mode === "login" ? "Anmelden" : "Konto anlegen"}</Btn>
+        </form>
+      </div>
+    </Screen>
   );
 }
 
@@ -2794,6 +3395,8 @@ const SCREEN_LABELS = [
   { id: "wallet",    label: "Wallet" },
   { id: "discover",  label: "Entdecken" },
   { id: "profile",   label: "Meine Spots" },
+  { id: "settings",  label: "Konto" },
+  { id: "auth",      label: "Login" },
   { id: "merchant",  label: "Dashboard" },
   { id: "campaign",  label: "Kampagne" },
   { id: "onboarding",label: "Händler-Setup" },
@@ -2809,20 +3412,57 @@ const SCREEN_LABELS = [
 export default function MySpot() {
   const [screen, setScreen] = useState("home");
   const [spotData, setSpotData] = useState(null);
+  const { spots } = useSpots();
+  const { user, loading: authLoading, needsAuth } = useAuth();
+  const pendingNav = useRef({ screen: null, data: null });
 
-  const goTo = (s, data = null) => {
-    setScreen(s);
+  const resumeAfterAuth = useCallback(() => {
+    const { screen: target, data } = pendingNav.current;
+    pendingNav.current = { screen: null, data: null };
+    setScreen(target ?? "home");
     if (data) setSpotData(data);
-  };
+  }, []);
+
+  const cancelAuth = useCallback(() => {
+    pendingNav.current = { screen: null, data: null };
+    setScreen("home");
+  }, []);
+
+  const goTo = useCallback(
+    (s, data = null) => {
+      if (s === "auth") {
+        pendingNav.current = { screen: null, data: null };
+        setScreen("auth");
+        return;
+      }
+      if (needsAuth && !authLoading && !user && PROTECTED_SCREENS.has(s)) {
+        pendingNav.current = { screen: s, data: data ?? null };
+        setScreen("auth");
+        return;
+      }
+      setScreen(s);
+      if (data) setSpotData(data);
+    },
+    [needsAuth, authLoading, user]
+  );
+
+  useEffect(() => {
+    if (!needsAuth || authLoading) return;
+    if (user) return;
+    if (screen === "auth") return;
+    if (PROTECTED_SCREENS.has(screen)) setScreen("home");
+  }, [user, authLoading, needsAuth, screen]);
 
   return (
     <div style={{ maxWidth: 390, margin: "0 auto", height: "100vh", overflow: "hidden", position: "relative", fontFamily: "'Inter', -apple-system, 'Helvetica Neue', sans-serif", background: C.bg }}>
 
       {/* Top nav – branded dark green */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 3, padding: "6px 8px", background: C.darkGreen, position: "sticky", top: 0, zIndex: 200 }}>
-        {SCREEN_LABELS.map(s => (
-          <button key={s.id} onClick={() => goTo(s.id)} style={{ background: screen === s.id ? C.green : "rgba(255,255,255,.1)", color: screen === s.id ? "#fff" : "rgba(255,255,255,.7)", border: "none", borderRadius: 7, padding: "4px 9px", fontSize: 10, fontWeight: screen === s.id ? 700 : 500, cursor: "pointer", transition: "all .15s" }}>{s.label}</button>
-        ))}
+        {SCREEN_LABELS.map((s) => {
+          const active = s.id === screen;
+          return (
+          <button key={s.id} onClick={() => goTo(s.id)} style={{ background: active ? C.green : "rgba(255,255,255,.1)", color: active ? "#fff" : "rgba(255,255,255,.7)", border: "none", borderRadius: 7, padding: "4px 9px", fontSize: 10, fontWeight: active ? 700 : 500, cursor: "pointer", transition: "all .15s" }}>{s.label}</button>
+        );})}
       </div>
 
       {/* Content */}
@@ -2831,18 +3471,20 @@ export default function MySpot() {
         {screen === "checkin"    && <CheckIn goTo={goTo} />}
         {screen === "wallet"     && <WalletScreen goTo={goTo} />}
         {screen === "discover"   && <Discover goTo={goTo} />}
-        {screen === "spot"       && <SpotDetail spot={spotData || SPOTS[0]} goTo={goTo} />}
+        {screen === "spot"       && <SpotDetail spot={spotData || spots[0] || DEMO_SPOTS[0]} goTo={goTo} />}
         {screen === "profile"    && <Profile goTo={goTo} />}
+        {screen === "settings"   && <GuestSettingsScreen goTo={goTo} />}
         {screen === "merchant"   && <MerchantDashboard goTo={goTo} />}
         {screen === "campaign"   && <CampaignScreen goTo={goTo} />}
         {screen === "onboarding" && <Onboarding goTo={goTo} />}
         {screen === "investor"   && <InvestorView goTo={goTo} />}
         {screen === "card"       && <CardLinkedScreen goTo={goTo} />}
         {screen === "onboarding-guest" && <OnboardingGuest onDone={()=>goTo("home")} />}
+        {screen === "auth"        && <GuestAuthScreen onSuccess={resumeAfterAuth} onCancel={cancelAuth} />}
         {screen === "benachrichtigungen" && <BenachrichtigungenScreen goTo={goTo} />}
         {screen === "gruppe"     && <GruppenScreen goTo={goTo} />}
         {screen === "scanflow"   && <ScanFlowScreen goTo={goTo} />}
-        {screen === "admin"      && <AdminDashboardScreen />}
+        {screen === "admin"      && <AdminDashboardScreen goTo={goTo} />}
       </div>
 
       <NavBar screen={screen} goTo={goTo} />

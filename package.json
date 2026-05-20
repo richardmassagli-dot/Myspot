@@ -6,14 +6,17 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "db:apply-003": "node scripts/apply-migration-003.mjs"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.5.2",
+    "pg": "^8.21.0",
     "vite": "^6.3.5"
   }
 }
